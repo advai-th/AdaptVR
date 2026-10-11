@@ -20,6 +20,26 @@ namespace AdaptiveVR.Companion
         Thinking
     }
 
+    public enum HintInFrontMode
+    {
+        [Tooltip("Bot swoops in front of the camera only for the first hint of each puzzle/session. Subsequent hints stay at the shoulder.")]
+        FirstHintOnly,
+
+        [Tooltip("Bot swoops in front of the camera for every hint given.")]
+        EveryHint,
+
+        [Tooltip("Bot remains at the shoulder for all hints.")]
+        Disabled
+    }
+
+    public enum HintPresentationState
+    {
+        AtSide,
+        MovingToFront,
+        InFront,
+        ReturningToSide
+    }
+
     /// <summary>
     /// Production-grade Unity VR script for a cute, floating futuristic companion bot.
     /// - Gently follows the player over the shoulder with smooth floating/bobbing physics.
@@ -36,15 +56,53 @@ namespace AdaptiveVR.Companion
     {
         #region Inspector Fields
 
-        [Header("--- Target & Following ---")]
+        [Header("--- Target & Shoulder Positioning ---")]
         [Tooltip("The player's head or VR Main Camera transform to follow. If unassigned, automatically finds Camera.main.")]
         public Transform followTarget;
 
-        [Tooltip("Position offset relative to the player's head (X=Right, Y=Up, Z=Forward).")]
-        public Vector3 shoulderOffset = new Vector3(0.50f, 0.10f, 0.45f);
-
         [Tooltip("True for right shoulder, False for left shoulder.")]
         public bool followRightShoulder = true;
+
+        [Header("--- Shoulder Side Distance Controls ---")]
+        [Tooltip("Lateral sideways distance from the player's head (how far out to the side the bot floats).")]
+        [Range(0.15f, 1.5f)]
+        public float shoulderSideDistance = 0.42f;
+
+        [Tooltip("Forward/backward distance relative to the player's shoulder.")]
+        [Range(-0.3f, 1.2f)]
+        public float shoulderForwardDistance = 0.38f;
+
+        [Tooltip("Vertical height offset relative to the player's head (negative = below head at shoulder height).")]
+        [Range(-0.6f, 0.4f)]
+        public float shoulderHeight = -0.18f;
+
+        [Tooltip("Overall master distance multiplier for the shoulder position. Slide this to quickly push the bot further away or pull it closer!")]
+        [Range(0.3f, 3.0f)]
+        public float shoulderDistanceMultiplier = 1.0f;
+
+        [Tooltip("Combined position offset vector relative to the player's head (X=Side, Y=Height, Z=Forward). Automatically synced with the distance controls above.")]
+        public Vector3 shoulderOffset = new Vector3(0.42f, -0.18f, 0.38f);
+
+        [Header("--- Head Turn Isolation (Deadzone / Body Yaw) ---")]
+        [Tooltip("If enabled, prevents the bot from orbiting away when you turn your head to look at it.\n" +
+                 "Uses a natural body/torso deadzone so you can turn your head and look directly at the bot on your shoulder!")]
+        public bool isolateHeadTurn = true;
+
+        [Tooltip("Head turn deadzone angle (degrees). Within this angle (e.g. 50-60°), turning your head won't move the bot on your shoulder, allowing you to look right at it.")]
+        [Range(15f, 90f)]
+        public float headTurnDeadzone = 55f;
+
+        [Tooltip("How smoothly the bot's shoulder anchor catches up when you turn your whole body beyond the deadzone.")]
+        [Range(0.1f, 3.0f)]
+        public float bodyYawSmoothTime = 0.6f;
+
+        [Header("--- Bot Scale & Dimensions ---")]
+        [Tooltip("Overall visual scale of the companion robot child model. Default ~8.5 provides a cute, shoulder-proportioned ~30cm bot.")]
+        [Range(2f, 30f)]
+        public float botModelScale = 8.5f;
+
+        [Tooltip("Transform of the 3D robot model child. If null, automatically looks for child named 'Robot'.")]
+        public Transform modelRoot;
 
         [Tooltip("Movement follow smoothness. Higher = gentler lag, Lower = snappier.")]
         [Range(0.1f, 1.5f)]
@@ -173,6 +231,48 @@ namespace AdaptiveVR.Companion
         [Range(15f, 80f)]
         public float typewriterSpeed = 35f;
 
+        [Header("--- In-Front Hint Presentation (Camera Transition) ---")]
+        [Tooltip("When giving hints, controls whether the bot comes in front of the camera before speaking, then smoothly returns to the side:\n" +
+                 "• FirstHintOnly: Comes in front only for the first hint of each puzzle/session. Subsequent hints stay at shoulder.\n" +
+                 "• EveryHint: Comes in front for every hint given.\n" +
+                 "• Disabled: Always stays at shoulder.")]
+        public HintInFrontMode hintInFrontMode = HintInFrontMode.FirstHintOnly;
+
+        [Tooltip("Distance in meters in front of the player's headset when presenting a hint. 0.65 - 0.75m is comfortable reading distance in VR.")]
+        [Range(0.45f, 1.4f)]
+        public float inFrontDistance = 0.70f;
+
+        [Tooltip("Vertical height offset relative to head height when in front. Negative values (-0.10f to -0.15f) keep the bot comfortably below eye level so it doesn't obstruct the user's view of puzzles.")]
+        [Range(-0.4f, 0.2f)]
+        public float inFrontHeightOffset = -0.12f;
+
+        [Tooltip("Seconds it takes for the bot to smoothly swoop from the shoulder to the front of the camera.")]
+        [Range(0.3f, 2.5f)]
+        public float swoopToFrontDuration = 0.85f;
+
+        [Tooltip("Seconds it takes for the bot to smoothly glide back to the shoulder after hint presentation completes.")]
+        [Range(0.3f, 2.5f)]
+        public float returnToSideDuration = 1.0f;
+
+        [Tooltip("Subtle sideways arc curve multiplier when transitioning between shoulder and front for natural drone swooping.")]
+        [Range(0f, 0.25f)]
+        public float swoopArcWidth = 0.08f;
+
+        [Tooltip("Delay in seconds after arriving in front before hint text and speech begin.")]
+        [Range(0f, 1.0f)]
+        public float arrivePauseBeforeSpeaking = 0.15f;
+
+        [Tooltip("Pause in seconds in front after speech bubble fades before beginning return to side.")]
+        [Range(0f, 1.5f)]
+        public float pauseAfterHintBeforeReturn = 0.35f;
+
+        [Tooltip("If true, gently tracks the player's head pitch (up/down look angle) while in front, so the bot stays in the center of their vertical gaze.")]
+        public bool followHeadPitchWhenInFront = true;
+
+        [Tooltip("Maximum pitch angle (degrees) to follow when looking up or down.")]
+        [Range(10f, 45f)]
+        public float maxPitchFollowAngle = 25f;
+
 
         [Header("--- Audio & SFX ---")]
         [Tooltip("AudioSource component for voice lines and chirps. Auto-created if null.")]
@@ -192,16 +292,32 @@ namespace AdaptiveVR.Companion
         public AudioClip celebrationAudioClip;
 
 
+        [Header("--- VR Touch / Tap Interaction ---")]
+        [Tooltip("Enable learners to poke/tap the bot with their VR controller or hand to request a hint.")]
+        public bool enableTouchForHint = true;
+
+        [Tooltip("Center offset of the touch trigger collider relative to the bot root.")]
+        public Vector3 touchTriggerCenter = new Vector3(0f, 0.14f, 0f);
+
+        [Tooltip("Radius of the trigger collider sphere used to detect VR hand/controller proximity.")]
+        [Range(0.08f, 0.35f)]
+        public float touchTriggerRadius = 0.18f;
+
+        [Tooltip("Cooldown in seconds between touch-triggered hints to prevent repeated accidental firing.")]
+        [Range(2f, 20f)]
+        public float touchHintCooldown = 5f;
+
+
         [Header("--- Soft Floating Glow (Antigravity Halo) ---")]
         [Tooltip("Enable a gentle, soft glowing antigravity halo disc beneath the bot to show it's floating.")]
         public bool enableFloatingGlow = true;
 
         [Tooltip("Position offset beneath the bot base.")]
-        public Vector3 glowOffset = new Vector3(0f, -0.16f, 0f);
+        public Vector3 glowOffset = new Vector3(0f, -0.04f, 0f);
 
         [Tooltip("Diameter of the soft circular halo disc.")]
         [Range(0.1f, 0.8f)]
-        public float haloDiameter = 0.28f;
+        public float haloDiameter = 0.22f;
 
         [Tooltip("Color tint for the soft levitation aura.")]
         public Color glowColor = new Color(0.0f, 0.88f, 1.0f, 0.85f);
@@ -268,6 +384,21 @@ namespace AdaptiveVR.Companion
         private Text _speechBubbleText;
         private Coroutine _bubbleDismissCoroutine;
 
+        // VR Touch Trigger
+        private SphereCollider _touchCollider;
+        private float _lastTouchHintTime = -999f;
+
+        // In-Front Hint Presentation State
+        private float _inFrontCurveProgress = 0f;
+        private HintPresentationState _hintPresentationState = HintPresentationState.AtSide;
+        private bool _hasGivenFirstHint = false;
+        private Coroutine _hintSequenceCoroutine;
+
+        // Torso / Body Yaw Tracking (Deadzone head-turn isolation)
+        private float _currentBodyYaw;
+        private float _bodyYawVelocity;
+        private bool _hasInitializedBodyYaw = false;
+
         #endregion
 
         #region Unity Lifecycle
@@ -278,6 +409,12 @@ namespace AdaptiveVR.Companion
             if (followTarget == null && Camera.main != null)
             {
                 followTarget = Camera.main.transform;
+            }
+
+            if (followTarget != null)
+            {
+                _currentBodyYaw = followTarget.eulerAngles.y;
+                _hasInitializedBodyYaw = true;
             }
 
             if (headAnchor == null)
@@ -298,6 +435,9 @@ namespace AdaptiveVR.Companion
                     audioSource.maxDistance = 10f;
                 }
             }
+
+            // Apply child model scale
+            ApplyModelScale();
 
             // Record initial hand transforms if assigned
             _hasHands = (leftHand != null || rightHand != null);
@@ -329,12 +469,99 @@ namespace AdaptiveVR.Companion
             }
 
             ScheduleNextBlink();
+
+            // Setup VR touch trigger collider
+            if (enableTouchForHint)
+                SetupTouchTrigger();
+        }
+
+        private void SetupTouchTrigger()
+        {
+            // Remove any existing trigger collider we may have created before
+            SphereCollider existing = GetComponent<SphereCollider>();
+            if (existing != null && existing.isTrigger) DestroyImmediate(existing);
+
+            _touchCollider = gameObject.AddComponent<SphereCollider>();
+            _touchCollider.isTrigger = true;
+            _touchCollider.radius    = touchTriggerRadius;
+            _touchCollider.center    = touchTriggerCenter;
+        }
+
+        private void OnTriggerEnter(Collider other)
+        {
+            if (!enableTouchForHint || !Application.isPlaying) return;
+            if (Time.time - _lastTouchHintTime < touchHintCooldown) return;
+
+            // Accept XR controller colliders, HandGrabInteractor, or "Hand" / "GameController" tagged objects
+            if (!IsVRHandOrController(other)) return;
+
+            _lastTouchHintTime = Time.time;
+
+            // Brief touching reaction
+            PlayChirp(ChirpType.Greeting);
+
+            // Ask companion bridge to show contextual hint
+            var bridge = GetComponent<AdaptiveVR.Adaptive.CompanionPuzzleBridge>();
+            if (bridge != null)
+            {
+                bridge.ShowContextualHint();
+            }
+            else
+            {
+                // Fallback: show a generic speech bubble
+                ShowHint("Need a hint? Try placing the next planet in the glowing orbit ring!", 5f);
+            }
+        }
+
+        private bool IsVRHandOrController(Collider col)
+        {
+            if (col == null) return false;
+
+            // 1. Direct XR Interactor component checks
+            if (col.GetComponentInParent<AdaptiveVR.PlanetPuzzle.HandGrabInteractor>() != null)
+                return true;
+
+            // 2. Safe Tag checks ("GameController" is built-in; "Hand" might not be defined in TagManager)
+            try
+            {
+                if (col.CompareTag("GameController")) return true;
+            }
+            catch (UnityException) { }
+
+            try
+            {
+                if (col.CompareTag("Hand")) return true;
+            }
+            catch (UnityException) { }
+
+            // 3. Name-based matching for hand/controller colliders and their parent objects
+            string colName = col.name.ToLower();
+            if (colName.Contains("hand") || colName.Contains("controller") || colName.Contains("interactor") || colName.Contains("direct"))
+                return true;
+
+            if (col.transform.parent != null)
+            {
+                string parentName = col.transform.parent.name.ToLower();
+                if (parentName.Contains("hand") || parentName.Contains("controller") || parentName.Contains("interactor"))
+                    return true;
+            }
+
+            return false;
         }
 
         private void Start()
         {
+            ApplyModelScale();
+            SyncShoulderControls();
+
             if (Application.isPlaying)
             {
+                if (!_hasInitializedBodyYaw && followTarget != null)
+                {
+                    _currentBodyYaw = followTarget.eulerAngles.y;
+                    _hasInitializedBodyYaw = true;
+                }
+
                 // Play a soft greeting chirp on startup
                 if (generateProceduralChirps || greetingAudioClip != null)
                 {
@@ -359,20 +586,82 @@ namespace AdaptiveVR.Companion
             }
         }
 
+        private void OnDisable()
+        {
+            if (_hintSequenceCoroutine != null)
+            {
+                StopCoroutine(_hintSequenceCoroutine);
+                _hintSequenceCoroutine = null;
+            }
+            _inFrontCurveProgress = 0f;
+            _hintPresentationState = HintPresentationState.AtSide;
+        }
+
         private void OnValidate()
         {
-            if (!enableFloatingGlow)
+            ApplyModelScale();
+            SyncShoulderControls();
+
+            // Sync touch collider radius and center when changed in Inspector
+            if (_touchCollider != null)
             {
-                RemoveFloatingGlow();
+                _touchCollider.radius = touchTriggerRadius;
+                _touchCollider.center = touchTriggerCenter;
             }
+
+            if (!enableFloatingGlow)
+                RemoveFloatingGlow();
             if (!enableSpeechBubble)
-            {
                 RemoveSpeechBubble();
+        }
+
+        /// <summary>
+        /// Computes the effective shoulder offset vector using the individual distance controls and multiplier.
+        /// </summary>
+        public Vector3 GetEffectiveShoulderOffset()
+        {
+            Vector3 baseOffset = new Vector3(shoulderSideDistance, shoulderHeight, shoulderForwardDistance);
+            return baseOffset * Mathf.Max(shoulderDistanceMultiplier, 0.05f);
+        }
+
+        /// <summary>
+        /// Synchronizes shoulderOffset vector with individual slider controls.
+        /// </summary>
+        public void SyncShoulderControls()
+        {
+            shoulderOffset = GetEffectiveShoulderOffset();
+        }
+
+        /// <summary>
+        /// Sets a custom lateral distance for the bot on the shoulder side.
+        /// </summary>
+        public void SetShoulderDistance(float lateralDistance, float multiplier = 1.0f)
+        {
+            shoulderSideDistance = lateralDistance;
+            shoulderDistanceMultiplier = multiplier;
+            SyncShoulderControls();
+        }
+
+        /// <summary>
+        /// Applies botModelScale to the child 3D robot model transform.
+        /// </summary>
+        public void ApplyModelScale()
+        {
+            if (modelRoot == null)
+            {
+                modelRoot = transform.Find("Robot");
+            }
+
+            if (modelRoot != null)
+            {
+                modelRoot.localScale = Vector3.one * botModelScale;
             }
         }
 
         private void HandleEditModePreview()
         {
+            ApplyModelScale();
+
             // Only update elements IF they exist in hierarchy - NEVER resurrect deleted objects every frame!
             Transform bubbleTrans = transform.Find("BotSpeechBubble");
             if (bubbleTrans != null)
@@ -467,16 +756,72 @@ namespace AdaptiveVR.Companion
                 else return;
             }
 
+            if (!_hasInitializedBodyYaw)
+            {
+                _currentBodyYaw = followTarget.eulerAngles.y;
+                _hasInitializedBodyYaw = true;
+            }
+
             _hoverTimer += Time.deltaTime * hoverBobFrequency;
 
-            // Compute ideal shoulder target position in world space
-            Vector3 sideSignOffset = shoulderOffset;
+            float headYaw = followTarget.eulerAngles.y;
+
+            // ── Head Turn Isolation (Torso / Body Yaw Deadzone) ────────────────
+            // Prevents the bot from orbiting away when the player turns their head to look at it!
+            if (isolateHeadTurn)
+            {
+                float angleDiff = Mathf.DeltaAngle(_currentBodyYaw, headYaw);
+
+                if (Mathf.Abs(angleDiff) > headTurnDeadzone)
+                {
+                    float targetBodyYaw = headYaw - Mathf.Sign(angleDiff) * headTurnDeadzone;
+                    _currentBodyYaw = Mathf.SmoothDampAngle(_currentBodyYaw, targetBodyYaw, ref _bodyYawVelocity, bodyYawSmoothTime);
+                }
+                else
+                {
+                    // Within deadzone: smoothly settle any residual velocity
+                    _currentBodyYaw = Mathf.SmoothDampAngle(_currentBodyYaw, _currentBodyYaw, ref _bodyYawVelocity, bodyYawSmoothTime);
+                }
+            }
+            else
+            {
+                _currentBodyYaw = headYaw;
+            }
+
+            // Compute target position in world space
+            Vector3 sideSignOffset = GetEffectiveShoulderOffset();
             if (!followRightShoulder) sideSignOffset.x = -sideSignOffset.x;
 
-            Vector3 targetHeadPos = followTarget.position;
-            Quaternion targetHeadRot = Quaternion.Euler(0f, followTarget.eulerAngles.y, 0f); // Yaw only
+            Vector3 inFrontTargetOffset = new Vector3(0f, inFrontHeightOffset, inFrontDistance);
 
-            Vector3 desiredWorldPos = targetHeadPos + targetHeadRot * sideSignOffset;
+            Vector3 targetHeadPos = followTarget.position;
+
+            // Blend between body yaw (at shoulder) and head yaw (in front of camera)
+            float targetYaw = Mathf.LerpAngle(_currentBodyYaw, headYaw, _inFrontCurveProgress);
+
+            // Optional subtle pitch tracking when in front so the bot matches gaze angle
+            float targetPitch = 0f;
+            if (followHeadPitchWhenInFront && _inFrontCurveProgress > 0.001f)
+            {
+                float rawPitch = followTarget.eulerAngles.x;
+                if (rawPitch > 180f) rawPitch -= 360f;
+                targetPitch = Mathf.Clamp(rawPitch, -maxPitchFollowAngle, maxPitchFollowAngle) * _inFrontCurveProgress;
+            }
+
+            Quaternion targetHeadRot = Quaternion.Euler(targetPitch, targetYaw, 0f);
+
+            // Smooth blend between shoulder offset and front offset
+            Vector3 currentFollowOffset = Vector3.Lerp(sideSignOffset, inFrontTargetOffset, _inFrontCurveProgress);
+
+            // Add subtle aerodynamic swoop arc for natural drone movement
+            if (_inFrontCurveProgress > 0.001f && _inFrontCurveProgress < 0.999f)
+            {
+                float arc = Mathf.Sin(_inFrontCurveProgress * Mathf.PI);
+                float sideSign = followRightShoulder ? 1f : -1f;
+                currentFollowOffset.x += sideSign * arc * swoopArcWidth;
+            }
+
+            Vector3 desiredWorldPos = targetHeadPos + targetHeadRot * currentFollowOffset;
 
             // Organic vertical bobbing using multi-sine waves
             float bobY = Mathf.Sin(_hoverTimer * Mathf.PI * 2f) * hoverBobAmplitude
@@ -620,7 +965,11 @@ namespace AdaptiveVR.Companion
             {
                 _faceMaterial = BotFaceTextureUtility.CreateEmissiveFaceMaterial(blueFeatureColor, emissionIntensity);
             }
-            ren.material = new Material(_faceMaterial);
+            Material featureMat = new Material(_faceMaterial);
+            if (Application.isPlaying)
+                ren.material = featureMat;
+            else
+                ren.sharedMaterial = featureMat;
             ren.shadowCastingMode = UnityEngine.Rendering.ShadowCastingMode.Off;
             ren.receiveShadows = false;
 
@@ -731,7 +1080,7 @@ namespace AdaptiveVR.Companion
         private void AssignTextureToRenderer(Renderer r, Texture2D tex)
         {
             if (r == null || tex == null) return;
-            Material mat = r.material;
+            Material mat = Application.isPlaying ? r.material : r.sharedMaterial;
             if (mat != null)
             {
                 mat.mainTexture = tex;
@@ -1027,7 +1376,10 @@ namespace AdaptiveVR.Companion
             }
 
             _haloRenderer = haloObj.GetComponent<Renderer>();
-            _haloRenderer.material = _haloMaterial;
+            if (Application.isPlaying)
+                _haloRenderer.material = _haloMaterial;
+            else
+                _haloRenderer.sharedMaterial = _haloMaterial;
             _haloRenderer.shadowCastingMode = UnityEngine.Rendering.ShadowCastingMode.Off;
             _haloRenderer.receiveShadows = false;
 
@@ -1123,14 +1475,78 @@ namespace AdaptiveVR.Companion
 
         /// <summary>
         /// Displays guidance or an adaptive hint in the world-space speech bubble with typewriter text animation.
+        /// When in-front presentation is active (based on hintInFrontMode or forceInFront), the bot smoothly swoops
+        /// in front of the camera, delivers the hint with speech bubble and audio, and then smoothly glides back to the side.
         /// </summary>
-        public void ShowHint(string message, float duration = 5.0f, AudioClip voiceClip = null)
+        public void ShowHint(string message, float duration = 5.0f, AudioClip voiceClip = null, bool? forceInFront = null)
         {
             if (!enableSpeechBubble || _speechBubbleObj == null) return;
 
+            bool shouldPresentInFront = forceInFront.HasValue ? forceInFront.Value : ShouldPresentInFront();
+
+            if (_hintSequenceCoroutine != null) StopCoroutine(_hintSequenceCoroutine);
             if (_bubbleDismissCoroutine != null) StopCoroutine(_bubbleDismissCoroutine);
             if (_typewriterCoroutine != null) StopCoroutine(_typewriterCoroutine);
 
+            if (shouldPresentInFront)
+            {
+                _hasGivenFirstHint = true;
+                _hintSequenceCoroutine = StartCoroutine(PresentHintInFrontRoutine(message, duration, voiceClip));
+            }
+            else
+            {
+                // Shoulder presentation
+                if (_inFrontCurveProgress > 0.01f && gameObject.activeInHierarchy)
+                {
+                    StartCoroutine(SmoothReturnToSideRoutine());
+                }
+
+                SetExpression(BotExpression.Talking, duration);
+
+                if (voiceClip != null && audioSource != null)
+                {
+                    audioSource.clip = voiceClip;
+                    audioSource.Play();
+                }
+                else
+                {
+                    PlayChirp(ChirpType.Talking);
+                }
+
+                _typewriterCoroutine = StartCoroutine(TypewriterTextRoutine(message, duration));
+            }
+        }
+
+        private IEnumerator PresentHintInFrontRoutine(string message, float duration, AudioClip voiceClip)
+        {
+            _hintPresentationState = HintPresentationState.MovingToFront;
+
+            // Inquisitive alert chirp as bot begins swooping forward to assist
+            PlayChirp(ChirpType.Greeting);
+
+            // ── Phase 1: Swoop to Front of Camera ────────────────────────────
+            float elapsed = 0f;
+            float startProgress = _inFrontCurveProgress;
+            float flyTime = Mathf.Max(swoopToFrontDuration, 0.1f);
+
+            while (elapsed < flyTime)
+            {
+                elapsed += Time.deltaTime;
+                float t = Mathf.Clamp01(elapsed / flyTime);
+                float smoothT = Mathf.SmoothStep(0f, 1f, t);
+                _inFrontCurveProgress = Mathf.Lerp(startProgress, 1f, smoothT);
+                yield return null;
+            }
+            _inFrontCurveProgress = 1f;
+            _hintPresentationState = HintPresentationState.InFront;
+
+            // Brief settle pause before talking
+            if (arrivePauseBeforeSpeaking > 0f)
+            {
+                yield return new WaitForSeconds(arrivePauseBeforeSpeaking);
+            }
+
+            // ── Phase 2: Deliver Hint In Front of Player ─────────────────────
             SetExpression(BotExpression.Talking, duration);
 
             if (voiceClip != null && audioSource != null)
@@ -1143,7 +1559,52 @@ namespace AdaptiveVR.Companion
                 PlayChirp(ChirpType.Talking);
             }
 
-            _typewriterCoroutine = StartCoroutine(TypewriterTextRoutine(message, duration));
+            if (_typewriterCoroutine != null) StopCoroutine(_typewriterCoroutine);
+            yield return StartCoroutine(TypewriterTextRoutine(message, duration));
+
+            // Settle pause after hint finishes before heading back
+            if (pauseAfterHintBeforeReturn > 0f)
+            {
+                yield return new WaitForSeconds(pauseAfterHintBeforeReturn);
+            }
+
+            // ── Phase 3: Smoothly Return to the Sides ────────────────────────
+            _hintPresentationState = HintPresentationState.ReturningToSide;
+
+            elapsed = 0f;
+            startProgress = _inFrontCurveProgress;
+            float returnTime = Mathf.Max(returnToSideDuration, 0.1f);
+
+            while (elapsed < returnTime)
+            {
+                elapsed += Time.deltaTime;
+                float t = Mathf.Clamp01(elapsed / returnTime);
+                float smoothT = Mathf.SmoothStep(0f, 1f, t);
+                _inFrontCurveProgress = Mathf.Lerp(startProgress, 0f, smoothT);
+                yield return null;
+            }
+            _inFrontCurveProgress = 0f;
+            _hintPresentationState = HintPresentationState.AtSide;
+            _hintSequenceCoroutine = null;
+        }
+
+        private IEnumerator SmoothReturnToSideRoutine()
+        {
+            _hintPresentationState = HintPresentationState.ReturningToSide;
+            float elapsed = 0f;
+            float startProgress = _inFrontCurveProgress;
+            float returnTime = Mathf.Max(returnToSideDuration * startProgress, 0.2f);
+
+            while (elapsed < returnTime)
+            {
+                elapsed += Time.deltaTime;
+                float t = Mathf.Clamp01(elapsed / returnTime);
+                float smoothT = Mathf.SmoothStep(0f, 1f, t);
+                _inFrontCurveProgress = Mathf.Lerp(startProgress, 0f, smoothT);
+                yield return null;
+            }
+            _inFrontCurveProgress = 0f;
+            _hintPresentationState = HintPresentationState.AtSide;
         }
 
         private IEnumerator TypewriterTextRoutine(string fullText, float displayDuration)
@@ -1183,14 +1644,55 @@ namespace AdaptiveVR.Companion
         }
 
         /// <summary>
-        /// Hides the speech bubble immediately.
+        /// Hides the speech bubble immediately and returns the bot to the side if it was in front.
         /// </summary>
         public void HideHint()
         {
+            if (_hintSequenceCoroutine != null)
+            {
+                StopCoroutine(_hintSequenceCoroutine);
+                _hintSequenceCoroutine = null;
+            }
             if (_typewriterCoroutine != null) StopCoroutine(_typewriterCoroutine);
             if (_speechBubbleCanvasGroup != null) _speechBubbleCanvasGroup.alpha = 0f;
             if (currentExpression == BotExpression.Talking) SetExpression(BotExpression.Idle);
+
+            if (_inFrontCurveProgress > 0.01f && gameObject.activeInHierarchy)
+            {
+                StartCoroutine(SmoothReturnToSideRoutine());
+            }
         }
+
+        /// <summary>
+        /// Checks whether the next hint should be presented in front of the camera based on hintInFrontMode.
+        /// </summary>
+        public bool ShouldPresentInFront()
+        {
+            if (hintInFrontMode == HintInFrontMode.Disabled) return false;
+            if (hintInFrontMode == HintInFrontMode.EveryHint) return true;
+            if (hintInFrontMode == HintInFrontMode.FirstHintOnly) return !_hasGivenFirstHint;
+            return false;
+        }
+
+        /// <summary>
+        /// Resets the first-hint state so that the next hint will again swoop in front of the camera
+        /// when hintInFrontMode is set to FirstHintOnly.
+        /// Call this when a new puzzle begins or a new level starts.
+        /// </summary>
+        public void ResetFirstHintState()
+        {
+            _hasGivenFirstHint = false;
+        }
+
+        /// <summary>
+        /// Has the companion robot presented its first hint yet?
+        /// </summary>
+        public bool HasGivenFirstHint => _hasGivenFirstHint;
+
+        /// <summary>
+        /// Current spatial presentation state (AtSide, MovingToFront, InFront, ReturningToSide).
+        /// </summary>
+        public HintPresentationState PresentationState => _hintPresentationState;
 
         /// <summary>
         /// Switches follow side between right shoulder and left shoulder.
@@ -1308,9 +1810,10 @@ namespace AdaptiveVR.Companion
             Transform target = followTarget != null ? followTarget : (Camera.main != null ? Camera.main.transform : null);
             if (target != null)
             {
-                Vector3 sideOffset = shoulderOffset;
+                Vector3 sideOffset = GetEffectiveShoulderOffset();
                 if (!followRightShoulder) sideOffset.x = -sideOffset.x;
-                Vector3 idealPos = target.position + Quaternion.Euler(0f, target.eulerAngles.y, 0f) * sideOffset;
+                float yaw = Application.isPlaying && isolateHeadTurn && _hasInitializedBodyYaw ? _currentBodyYaw : target.eulerAngles.y;
+                Vector3 idealPos = target.position + Quaternion.Euler(0f, yaw, 0f) * sideOffset;
 
                 Gizmos.color = new Color(0f, 0.9f, 1f, 0.4f);
                 Gizmos.DrawSphere(idealPos, 0.08f);
@@ -1319,6 +1822,12 @@ namespace AdaptiveVR.Companion
                 // Draw min comfort buffer sphere
                 Gizmos.color = new Color(1f, 0.5f, 0f, 0.2f);
                 Gizmos.DrawWireSphere(target.position, minComfortDistance);
+
+                // Draw in-front target position and flight path in editor
+                Vector3 frontPos = target.position + Quaternion.Euler(0f, target.eulerAngles.y, 0f) * new Vector3(0f, inFrontHeightOffset, inFrontDistance);
+                Gizmos.color = new Color(1f, 0.85f, 0.1f, 0.6f);
+                Gizmos.DrawSphere(frontPos, 0.08f);
+                Gizmos.DrawLine(idealPos, frontPos);
             }
         }
 

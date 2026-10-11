@@ -11,6 +11,7 @@ using UnityEngine.Networking;
 using UnityEngine.UI;
 using AdaptiveVR.DataCollection.Core;
 using AdaptiveVR.DataCollection.Storage;
+using AdaptiveVR.PlanetPuzzle;
 
 namespace AdaptiveVR.Networking
 {
@@ -103,6 +104,9 @@ namespace AdaptiveVR.Networking
         public UnityEvent<string> onDeviceRegistered;
         public UnityEvent<string> onDeviceLinked;
         public UnityEvent<AssignedSessionData> onSessionAssigned;
+        public UnityEvent onSessionPaused;
+        public UnityEvent onSessionResumed;
+        public UnityEvent onSessionEnded;
 
         // Internal WebSocket & Threading state
         private ClientWebSocket _webSocket;
@@ -111,6 +115,7 @@ namespace AdaptiveVR.Networking
         private readonly object _queueLock = new object();
         private bool _isReconnecting = false;
         private bool _isQuitting = false;
+        private bool _endingFromBackend = false;
 
         #region Unity Lifecycle
 
@@ -454,6 +459,35 @@ namespace AdaptiveVR.Networking
                         HandleSessionAssigned(rawJson);
                         break;
 
+                    case "session.paused":
+                        HandleSessionPaused(rawJson);
+                        break;
+
+                    case "session.resumed":
+                        HandleSessionResumed(rawJson);
+                        break;
+
+                    case "session.ended":
+                        HandleSessionEnded(rawJson);
+                        break;
+
+                    case "adaptation.command":
+                        HandleAdaptationCommand(rawJson);
+                        break;
+
+                    case "adaptation.event":
+                        HandleAdaptationEvent(rawJson);
+                        break;
+
+                    case "ml.prediction":
+                    case "prediction":
+                        HandleMlPrediction(rawJson);
+                        break;
+
+                    case "teacher.message":
+                        HandleTeacherMessage(rawJson);
+                        break;
+
                     default:
                         // Other messages (broadcasts, info, etc.)
                         break;
@@ -505,6 +539,269 @@ namespace AdaptiveVR.Networking
             catch (Exception ex)
             {
                 Debug.LogError($"[AdaptVRBackendClient] Exception in HandleSessionAssigned: {ex.Message}");
+            }
+        }
+
+        private void HandleSessionPaused(string rawJson)
+        {
+            try
+            {
+                var payload = JsonUtility.FromJson<SessionControlWsPayload>(rawJson);
+                string targetSessionId = payload != null ? payload.GetSessionId() : null;
+                string activeId = GetActiveSessionId();
+
+                if (!string.IsNullOrEmpty(targetSessionId) && !string.IsNullOrEmpty(activeId) && targetSessionId != activeId)
+                {
+                    return;
+                }
+
+                Debug.Log("<color=#FFA500><b>[AdaptVRBackendClient] Session Paused by Instructor!</b></color>");
+
+                if (SessionManager.Instance != null && SessionManager.Instance.isSessionActive && !SessionManager.Instance.isSessionPaused)
+                {
+                    SessionManager.Instance.PauseSession();
+                }
+
+                Time.timeScale = 0f;
+                UpdateStatusUI("SESSION PAUSED\nWaiting for instructor to resume...");
+                onSessionPaused?.Invoke();
+            }
+            catch (Exception ex)
+            {
+                Debug.LogError($"[AdaptVRBackendClient] Error handling session.paused: {ex.Message}");
+            }
+        }
+
+        private void HandleSessionResumed(string rawJson)
+        {
+            try
+            {
+                var payload = JsonUtility.FromJson<SessionControlWsPayload>(rawJson);
+                string targetSessionId = payload != null ? payload.GetSessionId() : null;
+                string activeId = GetActiveSessionId();
+
+                if (!string.IsNullOrEmpty(targetSessionId) && !string.IsNullOrEmpty(activeId) && targetSessionId != activeId)
+                {
+                    return;
+                }
+
+                Debug.Log("<color=#00FF88><b>[AdaptVRBackendClient] Session Resumed by Instructor!</b></color>");
+
+                Time.timeScale = 1f;
+
+                if (SessionManager.Instance != null && SessionManager.Instance.isSessionActive && SessionManager.Instance.isSessionPaused)
+                {
+                    SessionManager.Instance.ResumeSession();
+                }
+
+                string studentInfo = currentAssignedSession != null && !string.IsNullOrEmpty(currentAssignedSession.studentName) ? currentAssignedSession.studentName : "Student";
+                string moduleInfo = currentAssignedSession != null && !string.IsNullOrEmpty(currentAssignedSession.moduleName) ? currentAssignedSession.moduleName : "Solar System";
+                UpdateStatusUI($"SESSION ACTIVE\nStudent: {studentInfo}\nModule: {moduleInfo}");
+                onSessionResumed?.Invoke();
+            }
+            catch (Exception ex)
+            {
+                Debug.LogError($"[AdaptVRBackendClient] Error handling session.resumed: {ex.Message}");
+            }
+        }
+
+        private void HandleSessionEnded(string rawJson)
+        {
+            try
+            {
+                var payload = JsonUtility.FromJson<SessionControlWsPayload>(rawJson);
+                string targetSessionId = payload != null ? payload.GetSessionId() : null;
+                string activeId = GetActiveSessionId();
+
+                if (!string.IsNullOrEmpty(targetSessionId) && !string.IsNullOrEmpty(activeId) && targetSessionId != activeId)
+                {
+                    return;
+                }
+
+                Debug.Log("<color=#FF4444><b>[AdaptVRBackendClient] Session Ended by Instructor/Server!</b></color>");
+
+                Time.timeScale = 1f;
+
+                _endingFromBackend = true;
+                try
+                {
+                    if (SessionManager.Instance != null && SessionManager.Instance.isSessionActive)
+                    {
+                        SessionManager.Instance.EndSession();
+                    }
+                }
+                finally
+                {
+                    _endingFromBackend = false;
+                }
+
+                currentAssignedSession = null;
+                connectionState = ConnectionState.Registered;
+                UpdateStatusUI($"PAIRING CODE: {pairingCode}\nSession Ended. Waiting for instructor...");
+                onSessionEnded?.Invoke();
+            }
+            catch (Exception ex)
+            {
+                Debug.LogError($"[AdaptVRBackendClient] Error handling session.ended: {ex.Message}");
+            }
+        }
+
+        private void HandleAdaptationCommand(string rawJson)
+        {
+            try
+            {
+                var cmd = JsonUtility.FromJson<AdaptationCommandWsPayload>(rawJson);
+                if (cmd == null) return;
+
+                string action = cmd.GetAction();
+                string state = cmd.GetState();
+                bool enabled = cmd.GetEnabled(rawJson);
+
+                Debug.Log($"<color=#FFD700><b>[AdaptVRBackendClient] Adaptation Command received:</b> action={action}, state={state}, enabled={enabled}</color>");
+
+                var pm = SolarSystemPuzzleManager.Instance ??
+#if UNITY_2023_1_OR_NEWER
+                    FindFirstObjectByType<SolarSystemPuzzleManager>();
+#else
+                    FindObjectOfType<SolarSystemPuzzleManager>();
+#endif
+
+                // 1. Distractor Dimming / Visual Scaffolding Toggle
+                if (action == "toggle_distractor_dimming" || action == "distractor_dimming" || action == "dim_distractors" || action == "planet_greying")
+                {
+                    if (pm != null)
+                    {
+                        pm.TriggerTeacherDistractorDimming(enabled);
+                    }
+                    if (AdaptiveVR.Adaptive.LearnerStateManager.Instance != null && !string.IsNullOrEmpty(state))
+                    {
+                        AdaptiveVR.Adaptive.LearnerStateManager.Instance.SetCognitiveLoad(state);
+                    }
+                }
+                // 2. Planet Floating Labels Toggle
+                else if (action == "toggle_labels" || action == "planet_labels" || action == "labels")
+                {
+                    if (pm != null)
+                    {
+                        pm.TriggerTeacherLabels(enabled);
+                    }
+                }
+                // 3. Cognitive Load Override (High / Medium / Low)
+                else if ((action == "cognitive_load_override" || action == "set_cognitive_load") && !string.IsNullOrEmpty(state))
+                {
+                    if (AdaptiveVR.Adaptive.LearnerStateManager.Instance != null)
+                    {
+                        AdaptiveVR.Adaptive.LearnerStateManager.Instance.SetCognitiveLoad(state);
+                    }
+
+                    if (pm != null)
+                    {
+                        if (state.Equals("High", StringComparison.OrdinalIgnoreCase))
+                        {
+                            pm.SetDistractorDimming(true);
+                            pm.SetPlanetLabelsActive(true);
+                        }
+                        else if (state.Equals("Low", StringComparison.OrdinalIgnoreCase))
+                        {
+                            pm.SetDistractorDimming(false);
+                        }
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                Debug.LogError($"[AdaptVRBackendClient] Error handling adaptation command: {ex.Message}");
+            }
+        }
+
+        private void HandleAdaptationEvent(string rawJson)
+        {
+            try
+            {
+                var evt = JsonUtility.FromJson<AdaptationEventWsPayload>(rawJson);
+                if (evt == null) return;
+
+                string adaptType = evt.GetAdaptationType();
+                Debug.Log($"<color=#00E5FF><b>[AdaptVRBackendClient] Adaptation Event received:</b> {adaptType}</color>");
+
+                var pm = SolarSystemPuzzleManager.Instance ??
+#if UNITY_2023_1_OR_NEWER
+                    FindFirstObjectByType<SolarSystemPuzzleManager>();
+#else
+                    FindObjectOfType<SolarSystemPuzzleManager>();
+#endif
+
+                if (adaptType == "autonomous_distractor_dimming" || adaptType == "distractor_dimming")
+                {
+                    if (pm != null) pm.SetDistractorDimming(true);
+                    if (AdaptiveVR.Adaptive.LearnerStateManager.Instance != null)
+                    {
+                        AdaptiveVR.Adaptive.LearnerStateManager.Instance.SetCognitiveLoad("High");
+                    }
+                }
+                else if (adaptType == "autonomous_scaffolding_released" || adaptType == "scaffolding_released")
+                {
+                    if (pm != null) pm.SetDistractorDimming(false);
+                    if (AdaptiveVR.Adaptive.LearnerStateManager.Instance != null)
+                    {
+                        AdaptiveVR.Adaptive.LearnerStateManager.Instance.SetCognitiveLoad("Medium");
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                Debug.LogWarning($"[AdaptVRBackendClient] Error handling adaptation event: {ex.Message}");
+            }
+        }
+
+        private void HandleMlPrediction(string rawJson)
+        {
+            try
+            {
+                var pred = JsonUtility.FromJson<MlPredictionWsPayload>(rawJson);
+                if (pred == null) return;
+
+                string loadStr = pred.GetCognitiveLoad();
+                float confidence = pred.GetConfidence();
+
+                Debug.Log($"<color=#00FFCC><b>[AdaptVRBackendClient] ML Prediction received:</b> load={loadStr}, confidence={confidence:P0}</color>");
+
+                if (!string.IsNullOrEmpty(loadStr) && AdaptiveVR.Adaptive.LearnerStateManager.Instance != null)
+                {
+                    AdaptiveVR.Adaptive.LearnerStateManager.Instance.SetCognitiveLoad(loadStr, confidence);
+                }
+            }
+            catch (Exception ex)
+            {
+                Debug.LogWarning($"[AdaptVRBackendClient] Error handling ML prediction: {ex.Message}");
+            }
+        }
+
+        private void HandleTeacherMessage(string rawJson)
+        {
+            try
+            {
+                var tMsg = JsonUtility.FromJson<TeacherMessageWsPayload>(rawJson);
+                string msgText = tMsg != null ? tMsg.GetMessage() : null;
+
+                if (!string.IsNullOrEmpty(msgText))
+                {
+                    Debug.Log($"<color=#00E5FF>[AdaptVRBackendClient] Teacher direct message received: {msgText}</color>");
+#if UNITY_2023_1_OR_NEWER
+                    var bot = FindFirstObjectByType<AdaptiveVR.Companion.CompanionBot>();
+#else
+                    var bot = FindObjectOfType<AdaptiveVR.Companion.CompanionBot>();
+#endif
+                    if (bot != null)
+                    {
+                        // Swoops smoothly in front of the camera, speaks the teacher hint with speech bubble, then returns to side!
+                        bot.ShowHint($"Teacher: {msgText}", 7.0f, null, forceInFront: true);
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                Debug.LogError($"[AdaptVRBackendClient] Error handling teacher message: {ex.Message}");
             }
         }
 
@@ -575,24 +872,28 @@ namespace AdaptiveVR.Networking
 
         private void HookSessionManagerEvents()
         {
-            if (SessionManager.Instance == null) return;
+            if (!SessionManager.HasInstance && SessionManager.Instance == null) return;
+            var sm = SessionManager.Instance;
+            if (sm == null) return;
 
-            SessionManager.Instance.onSessionStarted.AddListener(HandleSessionManagerStarted);
-            SessionManager.Instance.onSessionEnded.AddListener(HandleSessionManagerEnded);
-            SessionManager.Instance.onTaskStarted.AddListener(HandleTaskStarted);
-            SessionManager.Instance.onTaskCompleted.AddListener(HandleTaskCompleted);
-            SessionManager.Instance.onTaskFailed.AddListener(HandleTaskFailed);
+            sm.onSessionStarted?.AddListener(HandleSessionManagerStarted);
+            sm.onSessionEnded?.AddListener(HandleSessionManagerEnded);
+            sm.onTaskStarted?.AddListener(HandleTaskStarted);
+            sm.onTaskCompleted?.AddListener(HandleTaskCompleted);
+            sm.onTaskFailed?.AddListener(HandleTaskFailed);
         }
 
         private void UnhookSessionManagerEvents()
         {
-            if (SessionManager.Instance == null) return;
+            if (!SessionManager.HasInstance) return;
+            var sm = SessionManager.Instance;
+            if (sm == null) return;
 
-            SessionManager.Instance.onSessionStarted.RemoveListener(HandleSessionManagerStarted);
-            SessionManager.Instance.onSessionEnded.RemoveListener(HandleSessionManagerEnded);
-            SessionManager.Instance.onTaskStarted.RemoveListener(HandleTaskStarted);
-            SessionManager.Instance.onTaskCompleted.RemoveListener(HandleTaskCompleted);
-            SessionManager.Instance.onTaskFailed.RemoveListener(HandleTaskFailed);
+            sm.onSessionStarted?.RemoveListener(HandleSessionManagerStarted);
+            sm.onSessionEnded?.RemoveListener(HandleSessionManagerEnded);
+            sm.onTaskStarted?.RemoveListener(HandleTaskStarted);
+            sm.onTaskCompleted?.RemoveListener(HandleTaskCompleted);
+            sm.onTaskFailed?.RemoveListener(HandleTaskFailed);
         }
 
         private void HandleSessionManagerStarted(string sessionId)
@@ -612,15 +913,20 @@ namespace AdaptiveVR.Networking
             connectionState = ConnectionState.Registered;
             UpdateStatusUI($"PAIRING CODE: {pairingCode}\nSession Completed. Waiting for instructor...");
 
-            int score = SessionManager.Instance.currentSession != null
-                ? Mathf.RoundToInt(SessionManager.Instance.currentSession.session.finalScore)
-                : 90;
+            if (!_endingFromBackend)
+            {
+                int score = SessionManager.Instance.currentSession != null
+                    ? Mathf.RoundToInt(SessionManager.Instance.currentSession.session.finalScore)
+                    : 90;
 
-            // Notify backend via REST API to persist completion in PostgreSQL
-            EndSessionOnBackend(sessionId, score, "completed");
+                // Notify backend via REST API to persist completion in PostgreSQL
+                EndSessionOnBackend(sessionId, score, "completed");
 
-            // Broadcast over WebSocket for dashboard live update
-            SendWebSocketMessage(FormatSimpleJson("session.client.ended", sessionId));
+                // Broadcast over WebSocket for dashboard live update
+                SendWebSocketMessage(FormatSimpleJson("session.client.ended", sessionId));
+            }
+
+            onSessionEnded?.Invoke();
         }
 
         private void HandleTaskStarted(TaskData task)
@@ -687,6 +993,46 @@ namespace AdaptiveVR.Networking
         #region REST API Client Methods (UnityWebRequest)
 
         /// <summary>
+        /// Sends real-time gameplay interaction telemetry over WebSocket and mirrors to REST database.
+        /// Live WebSocket packets populate the Device Debug Console instantly.
+        /// </summary>
+        public void SendGameplayEvent(string eventType, string pieceId, int orbitIndex, bool isCorrect, float responseTime = 0f, int errorCount = 0, int consecutiveErrors = 0, string action = null, string extraNotes = null)
+        {
+            string sId = GetActiveSessionId();
+
+            var payload = new GameplayTelemetryWsPayload
+            {
+                type = eventType,
+                sessionId = sId,
+                data = new GameplayTelemetryData
+                {
+                    event_type = eventType,
+                    type = eventType,
+                    piece_id = pieceId,
+                    orbit = orbitIndex,
+                    isCorrect = isCorrect,
+                    response_time = (float)Math.Round(responseTime, 2),
+                    error_count = errorCount,
+                    consecutive_errors = consecutiveErrors,
+                    action = action ?? (isCorrect ? "correct_snap" : "wrong_snap"),
+                    notes = extraNotes,
+                    timestamp = DateTime.UtcNow.ToString("o")
+                }
+            };
+
+            string json = JsonUtility.ToJson(payload);
+            SendWebSocketMessage(json);
+
+            // Mirror to REST if active
+            SendInteractionEvent(
+                eventType: eventType,
+                objectName: $"{pieceId} (Orbit {orbitIndex})",
+                responseTime: responseTime,
+                errorCount: errorCount
+            );
+        }
+
+        /// <summary>
         /// Sends an interaction event to POST /api/sessions/:id/events for persistent DB analytics.
         /// </summary>
         public void SendInteractionEvent(string eventType, string objectName, float responseTime, int errorCount, string interactionValueJson = null)
@@ -709,45 +1055,92 @@ namespace AdaptiveVR.Networking
         }
 
         /// <summary>
-        /// Sends ML Cognitive Load estimate to POST /api/sessions/:id/predictions.
+        /// Sends ML Cognitive Load estimate over WebSocket and to POST /api/sessions/:id/predictions.
         /// </summary>
-        public void SendCognitiveLoadPrediction(string cognitiveLoad, float confidenceScore)
+        public void SendCognitiveLoadPrediction(string cognitiveLoad, float confidenceScore, Adaptive.LearnerFeatureVector features = null)
         {
-            string sessionId = GetActiveSessionId();
-            if (string.IsNullOrEmpty(sessionId)) return;
+            string sId = GetActiveSessionId();
 
-            string url = $"{GetRestApiBaseUrl()}/sessions/{sessionId}/predictions";
-
-            var payload = new PredictionPostPayload
+            var payload = new PredictionTelemetryWsPayload
             {
-                predicted_cognitive_load = cognitiveLoad,
-                confidence_score = (float)Math.Round(confidenceScore, 3)
+                type = "ml.prediction",
+                sessionId = sId,
+                data = new PredictionTelemetryData
+                {
+                    event_type = "ml.prediction",
+                    type = "ml.prediction",
+                    predicted_cognitive_load = cognitiveLoad.ToLower(),
+                    confidence_score = (float)Math.Round(confidenceScore, 3),
+                    hesitation_time = features != null ? features.hesitationTime : 0f,
+                    wrong_snap_count = features != null ? features.wrongSnapCount : 0,
+                    correct_snap_count = features != null ? features.correctSnapCount : 0,
+                    idle_seconds = features != null ? features.idleSeconds : 0f,
+                    head_direction_changes = features != null ? features.headDirectionChanges : 0,
+                    error_rate = features != null ? (1f - Mathf.Clamp01(features.successRate)) : 0f,
+                    consecutive_errors = features != null ? features.consecutiveErrors : 0,
+                    timestamp = DateTime.UtcNow.ToString("o")
+                }
             };
 
-            string jsonBody = JsonUtility.ToJson(payload);
-            StartCoroutine(PostJsonCoroutine(url, jsonBody));
+            SendWebSocketMessage(JsonUtility.ToJson(payload));
+
+            // REST POST
+            if (!string.IsNullOrEmpty(sId))
+            {
+                string url = $"{GetRestApiBaseUrl()}/sessions/{sId}/predictions";
+                var restPayload = new PredictionPostPayload
+                {
+                    predicted_cognitive_load = cognitiveLoad,
+                    confidence_score = (float)Math.Round(confidenceScore, 3)
+                };
+                StartCoroutine(PostJsonCoroutine(url, JsonUtility.ToJson(restPayload)));
+            }
+        }
+
+        public void SendCognitiveLoadPrediction(string cognitiveLoad, float confidenceScore)
+        {
+            SendCognitiveLoadPrediction(cognitiveLoad, confidenceScore, null);
         }
 
         /// <summary>
-        /// Sends an adaptive intervention record to POST /api/sessions/:id/adaptations.
+        /// Sends an adaptive intervention record over WebSocket and to POST /api/sessions/:id/adaptations.
         /// </summary>
         public void SendAdaptationEvent(string adaptationType, string previousDifficulty, string newDifficulty, string description)
         {
-            string sessionId = GetActiveSessionId();
-            if (string.IsNullOrEmpty(sessionId)) return;
+            string sId = GetActiveSessionId();
 
-            string url = $"{GetRestApiBaseUrl()}/sessions/{sessionId}/adaptations";
-
-            var payload = new AdaptationPostPayload
+            var payload = new AdaptationTelemetryWsPayload
             {
-                adaptation_type = adaptationType,
-                previous_difficulty = previousDifficulty,
-                new_difficulty = newDifficulty,
-                description = description
+                type = "adaptation.event",
+                sessionId = sId,
+                data = new AdaptationTelemetryData
+                {
+                    event_type = "adaptation.event",
+                    type = "adaptation.event",
+                    action = adaptationType,
+                    state = newDifficulty,
+                    description = description,
+                    previous_difficulty = previousDifficulty,
+                    new_difficulty = newDifficulty,
+                    timestamp = DateTime.UtcNow.ToString("o")
+                }
             };
 
-            string jsonBody = JsonUtility.ToJson(payload);
-            StartCoroutine(PostJsonCoroutine(url, jsonBody));
+            SendWebSocketMessage(JsonUtility.ToJson(payload));
+
+            // REST POST
+            if (!string.IsNullOrEmpty(sId))
+            {
+                string url = $"{GetRestApiBaseUrl()}/sessions/{sId}/adaptations";
+                var restPayload = new AdaptationPostPayload
+                {
+                    adaptation_type = adaptationType,
+                    previous_difficulty = previousDifficulty,
+                    new_difficulty = newDifficulty,
+                    description = description
+                };
+                StartCoroutine(PostJsonCoroutine(url, JsonUtility.ToJson(restPayload)));
+            }
         }
 
         /// <summary>
@@ -767,6 +1160,20 @@ namespace AdaptiveVR.Networking
 
             string jsonBody = JsonUtility.ToJson(payload);
             StartCoroutine(PostJsonCoroutine(url, jsonBody));
+        }
+
+        /// <summary>
+        /// Uploads a labelled LearnerFeatureVector batch to POST /api/training/features.
+        /// Called by TrainingDataCollector at session end.
+        /// The json argument is a pre-serialised JSON string (manual serialisation,
+        /// no Newtonsoft dependency required).
+        /// </summary>
+        public void UploadTrainingFeatures(string sessionId, string json)
+        {
+            if (string.IsNullOrEmpty(sessionId) || string.IsNullOrEmpty(json)) return;
+
+            string url = $"{GetRestApiBaseUrl()}/training/features";
+            StartCoroutine(PostJsonCoroutine(url, json));
         }
 
         /// <summary>
@@ -808,17 +1215,24 @@ namespace AdaptiveVR.Networking
             }
         }
 
-        private string GetActiveSessionId()
+        private string _fallbackSessionId;
+
+        public string GetActiveSessionId()
         {
             if (currentAssignedSession != null && !string.IsNullOrEmpty(currentAssignedSession.sessionId))
             {
                 return currentAssignedSession.sessionId;
             }
-            if (SessionManager.Instance != null && !string.IsNullOrEmpty(SessionManager.Instance.activeSessionId))
+            if (SessionManager.HasInstance && SessionManager.Instance != null && !string.IsNullOrEmpty(SessionManager.Instance.activeSessionId))
             {
                 return SessionManager.Instance.activeSessionId;
             }
-            return null;
+            if (string.IsNullOrEmpty(_fallbackSessionId))
+            {
+                string cleanCode = !string.IsNullOrEmpty(pairingCode) ? pairingCode.Replace("-", "") : "QUEST";
+                _fallbackSessionId = $"SESSION_{cleanCode}_{DateTime.UtcNow:yyyyMMdd_HHmmss}";
+            }
+            return _fallbackSessionId;
         }
 
         #endregion
@@ -922,6 +1336,76 @@ namespace AdaptiveVR.Networking
     }
 
     [Serializable]
+    internal class GameplayTelemetryWsPayload
+    {
+        public string type;
+        public string sessionId;
+        public GameplayTelemetryData data;
+    }
+
+    [Serializable]
+    internal class GameplayTelemetryData
+    {
+        public string event_type;
+        public string type;
+        public string piece_id;
+        public int orbit;
+        public bool isCorrect;
+        public float response_time;
+        public int error_count;
+        public int consecutive_errors;
+        public string action;
+        public string notes;
+        public string timestamp;
+    }
+
+    [Serializable]
+    internal class PredictionTelemetryWsPayload
+    {
+        public string type;
+        public string sessionId;
+        public PredictionTelemetryData data;
+    }
+
+    [Serializable]
+    internal class PredictionTelemetryData
+    {
+        public string event_type;
+        public string type;
+        public string predicted_cognitive_load;
+        public float confidence_score;
+        public float hesitation_time;
+        public int wrong_snap_count;
+        public int correct_snap_count;
+        public float idle_seconds;
+        public int head_direction_changes;
+        public float error_rate;
+        public int consecutive_errors;
+        public string timestamp;
+    }
+
+    [Serializable]
+    internal class AdaptationTelemetryWsPayload
+    {
+        public string type;
+        public string sessionId;
+        public AdaptationTelemetryData data;
+    }
+
+    [Serializable]
+    internal class AdaptationTelemetryData
+    {
+        public string event_type;
+        public string type;
+        public string action;
+        public string state;
+        public string description;
+        public string previous_difficulty;
+        public string new_difficulty;
+        public string timestamp;
+    }
+
+    [Serializable]
     internal class InteractionEventPostPayload
     {
         public string event_type;
@@ -959,6 +1443,204 @@ namespace AdaptiveVR.Networking
     {
         public int final_score;
         public string completion_status;
+    }
+
+    [Serializable]
+    internal class SessionControlWsPayload
+    {
+        public string type;
+        public string sessionId;
+        public SessionControlData data;
+
+        public string GetSessionId()
+        {
+            if (!string.IsNullOrEmpty(sessionId)) return sessionId;
+            if (data != null)
+            {
+                if (!string.IsNullOrEmpty(data.sessionId)) return data.sessionId;
+                if (!string.IsNullOrEmpty(data.session_id)) return data.session_id;
+            }
+            return null;
+        }
+    }
+
+    [Serializable]
+    internal class SessionControlData
+    {
+        public string type;
+        public string sessionId;
+        public string session_id;
+    }
+
+    [Serializable]
+    internal class AdaptationCommandWsPayload
+    {
+        public string type;
+        public string sessionId;
+        public string action;
+        public bool enabled;
+        public string state;
+        public string description;
+        public AdaptationCommandWsData data;
+
+        public string GetAction()
+        {
+            if (!string.IsNullOrEmpty(action)) return action;
+            if (data != null && !string.IsNullOrEmpty(data.action)) return data.action;
+            return null;
+        }
+
+        public string GetState()
+        {
+            if (!string.IsNullOrEmpty(state)) return state;
+            if (data != null && !string.IsNullOrEmpty(data.state)) return data.state;
+            return null;
+        }
+
+        public bool GetEnabled(string rawJson = null)
+        {
+            if (!string.IsNullOrEmpty(rawJson))
+            {
+                if (rawJson.IndexOf("\"enabled\":false", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                    rawJson.IndexOf("\"enabled\": false", StringComparison.OrdinalIgnoreCase) >= 0)
+                {
+                    return false;
+                }
+                if (rawJson.IndexOf("\"enabled\":true", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                    rawJson.IndexOf("\"enabled\": true", StringComparison.OrdinalIgnoreCase) >= 0)
+                {
+                    return true;
+                }
+            }
+
+            if (enabled) return true;
+            if (data != null && data.enabled) return true;
+
+            string st = GetState();
+            if (!string.IsNullOrEmpty(st))
+            {
+                if (st.Equals("false", StringComparison.OrdinalIgnoreCase) ||
+                    st.Equals("off", StringComparison.OrdinalIgnoreCase) ||
+                    st.Equals("disable", StringComparison.OrdinalIgnoreCase) ||
+                    st.Equals("Low", StringComparison.OrdinalIgnoreCase))
+                {
+                    return false;
+                }
+                if (st.Equals("true", StringComparison.OrdinalIgnoreCase) ||
+                    st.Equals("on", StringComparison.OrdinalIgnoreCase) ||
+                    st.Equals("enable", StringComparison.OrdinalIgnoreCase) ||
+                    st.Equals("High", StringComparison.OrdinalIgnoreCase))
+                {
+                    return true;
+                }
+            }
+            return false;
+        }
+    }
+
+    [Serializable]
+    internal class AdaptationCommandWsData
+    {
+        public string action;
+        public string state;
+        public bool enabled;
+        public string description;
+    }
+
+    [Serializable]
+    internal class AdaptationEventWsPayload
+    {
+        public string type;
+        public string sessionId;
+        public string adaptation_type;
+        public string action;
+        public string description;
+        public AdaptationEventWsData data;
+
+        public string GetAdaptationType()
+        {
+            if (!string.IsNullOrEmpty(adaptation_type)) return adaptation_type;
+            if (!string.IsNullOrEmpty(action)) return action;
+            if (data != null)
+            {
+                if (!string.IsNullOrEmpty(data.adaptation_type)) return data.adaptation_type;
+                if (!string.IsNullOrEmpty(data.action)) return data.action;
+            }
+            return null;
+        }
+    }
+
+    [Serializable]
+    internal class AdaptationEventWsData
+    {
+        public string adaptation_type;
+        public string action;
+        public string description;
+    }
+
+    [Serializable]
+    internal class MlPredictionWsPayload
+    {
+        public string type;
+        public string sessionId;
+        public string predicted_cognitive_load;
+        public string state;
+        public float confidence_score;
+        public MlPredictionWsData data;
+
+        public string GetCognitiveLoad()
+        {
+            if (!string.IsNullOrEmpty(predicted_cognitive_load)) return predicted_cognitive_load;
+            if (data != null && !string.IsNullOrEmpty(data.predicted_cognitive_load)) return data.predicted_cognitive_load;
+            if (data != null && !string.IsNullOrEmpty(data.cognitive_load)) return data.cognitive_load;
+            if (!string.IsNullOrEmpty(state)) return state;
+            if (data != null && !string.IsNullOrEmpty(data.state)) return data.state;
+            return null;
+        }
+
+        public float GetConfidence()
+        {
+            if (confidence_score > 0f) return confidence_score;
+            if (data != null && data.confidence_score > 0f) return data.confidence_score;
+            if (data != null && data.confidence > 0f) return data.confidence;
+            return 0.85f;
+        }
+    }
+
+    [Serializable]
+    internal class MlPredictionWsData
+    {
+        public string predicted_cognitive_load;
+        public string cognitive_load;
+        public string state;
+        public float confidence_score;
+        public float confidence;
+    }
+
+    [Serializable]
+    internal class TeacherMessageWsPayload
+    {
+        public string type;
+        public string sessionId;
+        public string studentName;
+        public string message;
+        public TeacherMessageWsData data;
+
+        public string GetMessage()
+        {
+            if (!string.IsNullOrEmpty(message)) return message;
+            if (data != null && !string.IsNullOrEmpty(data.message)) return data.message;
+            if (data != null && !string.IsNullOrEmpty(data.text)) return data.text;
+            return null;
+        }
+    }
+
+    [Serializable]
+    internal class TeacherMessageWsData
+    {
+        public string message;
+        public string text;
+        public string studentName;
     }
 
     #endregion

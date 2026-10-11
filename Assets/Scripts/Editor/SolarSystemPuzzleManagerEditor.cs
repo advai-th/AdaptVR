@@ -1,6 +1,7 @@
 using UnityEngine;
 using UnityEditor;
 using UnityEditor.SceneManagement;
+using AdaptiveVR.Editor;
 
 namespace AdaptiveVR.PlanetPuzzle
 {
@@ -103,7 +104,67 @@ namespace AdaptiveVR.PlanetPuzzle
             }
             EditorGUILayout.EndVertical();
 
-            GUILayout.Space(10);
+            GUILayout.Space(8);
+
+            // Cognitive Load Visual Scaffolding (Planet Greying)
+            EditorGUILayout.BeginVertical(EditorStyles.helpBox);
+            EditorGUILayout.LabelField("COGNITIVE LOAD VISUAL SCAFFOLDING", EditorStyles.boldLabel);
+            EditorGUI.BeginChangeCheck();
+            bool newDimming = EditorGUILayout.Toggle("Planet Greying Active", manager.distractorDimmingActive);
+            if (EditorGUI.EndChangeCheck())
+            {
+                Undo.RecordObject(manager, "Toggle Distractor Dimming");
+                manager.SetDistractorDimming(newDimming);
+                EditorUtility.SetDirty(manager);
+            }
+
+            GUI.backgroundColor = manager.distractorDimmingActive ? new Color(1.0f, 0.45f, 0.45f) : new Color(0.2f, 0.85f, 0.95f);
+            if (GUILayout.Button(manager.distractorDimmingActive ? "Deactivate Planet Greying (Normal)" : "Test Planet Greying (Grey Others / Bright Target)", GUILayout.Height(30)))
+            {
+                Undo.RecordObject(manager, "Toggle Distractor Dimming");
+                manager.SetDistractorDimming(!manager.distractorDimmingActive);
+                EditorUtility.SetDirty(manager);
+            }
+            GUI.backgroundColor = Color.white;
+            EditorGUILayout.EndVertical();
+
+            GUILayout.Space(8);
+
+            // Cognitive Scaffolding: Floating Planet Name Labels
+            EditorGUILayout.BeginVertical(EditorStyles.helpBox);
+            EditorGUILayout.LabelField("PLANET NAME LABELS (FLOATING HINTS)", EditorStyles.boldLabel);
+            EditorGUI.BeginChangeCheck();
+            bool newLabelsActive = EditorGUILayout.Toggle("Planet Labels Active", manager.planetLabelsActive);
+            PlanetLabelMode newMode = (PlanetLabelMode)EditorGUILayout.EnumPopup("Label Mode", manager.currentPlanetLabelMode);
+            if (EditorGUI.EndChangeCheck())
+            {
+                Undo.RecordObject(manager, "Toggle Planet Name Labels");
+                manager.SetPlanetLabelsActive(newLabelsActive, newMode);
+                EditorUtility.SetDirty(manager);
+            }
+
+            GUI.backgroundColor = manager.planetLabelsActive ? new Color(1.0f, 0.45f, 0.45f) : new Color(0.2f, 0.85f, 0.95f);
+            if (GUILayout.Button(manager.planetLabelsActive ? "Deactivate Planet Labels (Hide)" : "Test Floating Planet Labels (Show)", GUILayout.Height(30)))
+            {
+                Undo.RecordObject(manager, "Toggle Planet Name Labels");
+                manager.SetPlanetLabelsActive(!manager.planetLabelsActive, manager.currentPlanetLabelMode);
+                EditorUtility.SetDirty(manager);
+            }
+            GUI.backgroundColor = Color.white;
+            EditorGUILayout.HelpBox("Displays subtle floating name tags directly above unplaced planets on the table. Automatically active in Low (Struggling) & Medium (Learning) states.", MessageType.None);
+            EditorGUILayout.EndVertical();
+
+            GUILayout.Space(8);
+
+            // OPTION A: ONE-CLICK STATIONARY VR SETUP
+            GUI.backgroundColor = new Color(0.95f, 0.45f, 0.95f);
+            if (GUILayout.Button("⭐ OPTIMIZE FOR STATIONARY VR (OPTION A)", GUILayout.Height(38)))
+            {
+                StationaryScaleOptimizer.OptimizeForStationaryVR();
+            }
+            GUI.backgroundColor = Color.white;
+
+            GUILayout.Space(6);
 
             // Primary Setup Action 1: Auto-Detect Custom Prefabs
             GUI.backgroundColor = new Color(0.2f, 0.65f, 0.95f);

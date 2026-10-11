@@ -13,7 +13,39 @@ namespace AdaptiveVR.DataCollection.Core
     /// </summary>
     public class SessionManager : MonoBehaviour
     {
-        public static SessionManager Instance { get; private set; }
+        private static SessionManager _instance;
+        private static bool _isQuitting = false;
+
+        public static bool HasInstance => _instance != null && !_isQuitting;
+
+        public static SessionManager Instance
+        {
+            get
+            {
+                if (_isQuitting) return null;
+
+                if (_instance == null)
+                {
+#if UNITY_2023_1_OR_NEWER
+                    _instance = FindFirstObjectByType<SessionManager>();
+#else
+                    _instance = FindObjectOfType<SessionManager>();
+#endif
+                    if (_instance == null && Application.isPlaying && !_isQuitting)
+                    {
+                        var go = new GameObject("SessionManager");
+                        _instance = go.AddComponent<SessionManager>();
+                        _instance.EnsureEventsInitialized();
+                    }
+                }
+                if (_instance != null)
+                {
+                    _instance.EnsureEventsInitialized();
+                }
+                return _instance;
+            }
+            private set => _instance = value;
+        }
 
         [Header("Configuration")]
         [Tooltip("Global data collection configuration asset. If null, a default config will be instantiated.")]
@@ -27,7 +59,7 @@ namespace AdaptiveVR.DataCollection.Core
         public string moduleId = "SOLAR_SYSTEM_01";
 
         [Tooltip("Automatically start a session in Start() if not already active.")]
-        public bool autoStartSessionOnPlay = false;
+        public bool autoStartSessionOnPlay = true;
 
         [Header("Runtime State (Read-Only)")]
         [Tooltip("Is a learning session currently in progress?")]
@@ -46,13 +78,13 @@ namespace AdaptiveVR.DataCollection.Core
         public TaskData currentTask;
 
         [Header("Session Lifecycle Events")]
-        public UnityEvent<string> onSessionStarted;
-        public UnityEvent<string> onSessionEnded;
-        public UnityEvent onSessionPaused;
-        public UnityEvent onSessionResumed;
-        public UnityEvent<TaskData> onTaskStarted;
-        public UnityEvent<TaskData> onTaskCompleted;
-        public UnityEvent<TaskData> onTaskFailed;
+        public UnityEvent<string> onSessionStarted = new UnityEvent<string>();
+        public UnityEvent<string> onSessionEnded = new UnityEvent<string>();
+        public UnityEvent onSessionPaused = new UnityEvent();
+        public UnityEvent onSessionResumed = new UnityEvent();
+        public UnityEvent<TaskData> onTaskStarted = new UnityEvent<TaskData>();
+        public UnityEvent<TaskData> onTaskCompleted = new UnityEvent<TaskData>();
+        public UnityEvent<TaskData> onTaskFailed = new UnityEvent<TaskData>();
 
         // Internal timing tracking
         private float _sessionStartTime;
@@ -60,15 +92,28 @@ namespace AdaptiveVR.DataCollection.Core
         private float _pausedDurationAccumulator;
         private float _pauseStartTime;
 
+        public void EnsureEventsInitialized()
+        {
+            if (onSessionStarted == null) onSessionStarted = new UnityEvent<string>();
+            if (onSessionEnded == null) onSessionEnded = new UnityEvent<string>();
+            if (onSessionPaused == null) onSessionPaused = new UnityEvent();
+            if (onSessionResumed == null) onSessionResumed = new UnityEvent();
+            if (onTaskStarted == null) onTaskStarted = new UnityEvent<TaskData>();
+            if (onTaskCompleted == null) onTaskCompleted = new UnityEvent<TaskData>();
+            if (onTaskFailed == null) onTaskFailed = new UnityEvent<TaskData>();
+        }
+
         private void Awake()
         {
-            if (Instance != null && Instance != this)
+            if (_instance != null && _instance != this)
             {
                 Destroy(gameObject);
                 return;
             }
 
-            Instance = this;
+            _instance = this;
+            _isQuitting = false;
+            EnsureEventsInitialized();
 
             if (config == null)
             {
@@ -81,6 +126,7 @@ namespace AdaptiveVR.DataCollection.Core
             if (autoStartSessionOnPlay && !isSessionActive)
             {
                 StartSession();
+                StartTask("SOLAR_SYSTEM_PUZZLE", "Solar System Planetary Placement");
             }
         }
 
@@ -90,10 +136,16 @@ namespace AdaptiveVR.DataCollection.Core
             {
                 EndSession();
             }
+
+            if (_instance == this)
+            {
+                _instance = null;
+            }
         }
 
         private void OnApplicationQuit()
         {
+            _isQuitting = true;
             if (isSessionActive)
             {
                 if (config != null && config.autoSaveOnApplicationQuit)
@@ -298,6 +350,60 @@ namespace AdaptiveVR.DataCollection.Core
 
                 currentTask = null;
             }
+        }
+
+        /// <summary>
+        /// Records a cognitive-load inference result into the active task's stateHistory list.
+        /// Called by LearnerStateManager.ReportState() after each ONNX inference window.
+        /// </summary>
+        public void RecordLearnerState(string predictedState, float confidence, string modelVersion)
+        {
+            if (!isSessionActive || currentTask == null) return;
+
+            currentTask.stateHistory.Add(new AdaptiveVR.DataCollection.Storage.LearnerStateRecord
+            {
+                timestamp       = Time.time - _taskStartTime,
+                predictedState  = predictedState,
+                confidence      = (float)Math.Round(confidence, 3),
+                modelVersion    = modelVersion,
+                predictionIndex = currentTask.stateHistory.Count + 1
+            });
+        }
+
+        /// <summary>
+        /// Records an object interaction into the current task's interactions list.
+        /// </summary>
+        public void RecordInteraction(string objectId, string interactionType, bool successful, float duration = 0f)
+        {
+            if (!isSessionActive)
+            {
+                StartSession();
+            }
+            if (currentTask == null)
+            {
+                StartTask("SOLAR_SYSTEM_PUZZLE", "Solar System Planetary Placement");
+            }
+
+            float timeInTask = Time.time - _taskStartTime;
+            currentTask.interactions.Add(new InteractionRecord(timeInTask, objectId, interactionType, successful, duration));
+        }
+
+        /// <summary>
+        /// Records a discrete learning event into the current task's learningEvents list.
+        /// </summary>
+        public void RecordLearningEvent(string eventType, string objectId = "", string metadata = "")
+        {
+            if (!isSessionActive)
+            {
+                StartSession();
+            }
+            if (currentTask == null)
+            {
+                StartTask("SOLAR_SYSTEM_PUZZLE", "Solar System Planetary Placement");
+            }
+
+            float timeInTask = Time.time - _taskStartTime;
+            currentTask.learningEvents.Add(new LearningEventRecord(timeInTask, eventType, currentTask.taskId, objectId, metadata));
         }
 
         /// <summary>

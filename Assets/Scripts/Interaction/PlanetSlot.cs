@@ -2,6 +2,8 @@ using System;
 using UnityEngine;
 using UnityEngine.Events;
 using AdaptiveVR.Environment;
+using AdaptiveVR.Networking;
+using AdaptiveVR.DataCollection.Core;
 
 namespace AdaptiveVR.PlanetPuzzle
 {
@@ -48,11 +50,21 @@ namespace AdaptiveVR.PlanetPuzzle
         [Tooltip("Optional root GameObject of the entire orbit (containing line and socket) for sequential activation.")]
         public GameObject orbitRootObject;
 
-        [Header("Feedback Colors (Faint & Subtle)")]
-        public Color emptyColor = new Color(0.2f, 0.65f, 0.95f, 0.15f);    // Faint Soft Cyan (Lower Opacity)
-        public Color hoverColor = new Color(1.0f, 1.0f, 1.0f, 0.5f);       // Subtle Soft White Hover
-        public Color correctColor = new Color(0.1f, 0.9f, 0.4f, 0.6f);     // Pleasant Soft Green
-        public Color incorrectColor = new Color(0.95f, 0.25f, 0.2f, 0.6f); // Soft Warning Red
+        [Header("Feedback Colors")]
+        public Color emptyColor = new Color(0.0f, 0.85f, 1.0f, 0.85f);    // Vibrant Celestial Cyan
+        public Color hoverColor = new Color(1.0f, 1.0f, 1.0f, 1.0f);       // Luminous White Hover
+        public Color correctColor = new Color(0.1f, 1.0f, 0.45f, 0.95f);   // Bright Soft Green
+        public Color incorrectColor = new Color(1.0f, 0.25f, 0.2f, 0.9f);  // Soft Warning Red
+
+        [Header("Pad Brightness & Adaptive Glow")]
+        [Tooltip("General brightness/emission multiplier for the socket pad.")]
+        [Range(0.5f, 5.0f)]
+        public float padEmissionMultiplier = 2.2f;
+
+        [Tooltip("When true, the pad pulses with a celestial glow to guide attention without needing a floating beacon.")]
+        public bool isPulsingGlow = false;
+
+        private float _pulseTimer = 0f;
 
         [Header("Current Placement State")]
         public GrabbablePlanet currentlyPlacedPlanet;
@@ -152,13 +164,57 @@ namespace AdaptiveVR.PlanetPuzzle
 
             UpdateVisualFeedback();
 
+            float responseTime = (planet != null && planet.grabDuration > 0f) ? planet.grabDuration : 1.5f;
+
             if (isCorrect)
             {
                 onCorrectPlacement?.Invoke();
+
+                if (AdaptVRBackendClient.Instance != null)
+                {
+                    AdaptVRBackendClient.Instance.SendGameplayEvent(
+                        eventType: "puzzle_snapped",
+                        pieceId: planet.preset.ToString(),
+                        orbitIndex: orbitIndex,
+                        isCorrect: true,
+                        responseTime: responseTime,
+                        errorCount: 0,
+                        consecutiveErrors: 0,
+                        action: "puzzle_snapped",
+                        extraNotes: $"Correctly placed {planet.preset} in Orbit {orbitIndex}"
+                    );
+                }
+
+                if (SessionManager.HasInstance && SessionManager.Instance != null)
+                {
+                    SessionManager.Instance.RecordInteraction(planet.preset.ToString(), "snap_correct", true, responseTime);
+                    SessionManager.Instance.RecordLearningEvent("puzzle_snapped", planet.preset.ToString(), $"Orbit {orbitIndex}");
+                }
             }
             else
             {
                 onIncorrectPlacement?.Invoke();
+
+                if (AdaptVRBackendClient.Instance != null)
+                {
+                    AdaptVRBackendClient.Instance.SendGameplayEvent(
+                        eventType: "wrong_snap",
+                        pieceId: planet.preset.ToString(),
+                        orbitIndex: orbitIndex,
+                        isCorrect: false,
+                        responseTime: responseTime,
+                        errorCount: 1,
+                        consecutiveErrors: 1,
+                        action: "wrong_snap",
+                        extraNotes: $"Incorrect snap: {planet.preset} in Orbit {orbitIndex} (expected {expectedPreset})"
+                    );
+                }
+
+                if (SessionManager.HasInstance && SessionManager.Instance != null)
+                {
+                    SessionManager.Instance.RecordInteraction(planet.preset.ToString(), "wrong_snap", false, responseTime);
+                    SessionManager.Instance.RecordLearningEvent("wrong_snap", planet.preset.ToString(), $"Orbit {orbitIndex} (expected {expectedPreset})");
+                }
             }
 
             OnPlanetStateChanged?.Invoke(this, planet, isCorrect);
@@ -182,12 +238,55 @@ namespace AdaptiveVR.PlanetPuzzle
                 currentState = SlotState.Empty;
                 UpdateVisualFeedback();
 
+                if (AdaptVRBackendClient.Instance != null && prev != null)
+                {
+                    AdaptVRBackendClient.Instance.SendGameplayEvent(
+                        eventType: "gameplay",
+                        pieceId: prev.preset.ToString(),
+                        orbitIndex: orbitIndex,
+                        isCorrect: false,
+                        action: "slot_cleared",
+                        extraNotes: $"Removed {prev.preset} from Orbit {orbitIndex}"
+                    );
+                }
+
+                if (SessionManager.HasInstance && SessionManager.Instance != null && prev != null)
+                {
+                    SessionManager.Instance.RecordInteraction(prev.preset.ToString(), "slot_cleared", true);
+                }
+
                 onSlotCleared?.Invoke();
                 OnPlanetStateChanged?.Invoke(this, null, false);
             }
             else
             {
                 currentState = SlotState.Empty;
+                UpdateVisualFeedback();
+            }
+        }
+
+        private void Update()
+        {
+            if (isPulsingGlow && isSlotActive && currentState == SlotState.Empty && indicatorRenderer != null)
+            {
+                _pulseTimer += Time.deltaTime * 3.5f;
+                float pulse = 1.0f + 0.65f * Mathf.Sin(_pulseTimer);
+                if (_indicatorMaterial == null) _indicatorMaterial = indicatorRenderer.material;
+                if (_indicatorMaterial != null)
+                {
+                    ApplyColorToMaterial(_indicatorMaterial, emptyColor, 1.8f * padEmissionMultiplier * pulse);
+                }
+            }
+        }
+
+        /// <summary>
+        /// Enables an adaptive pulsing glow on the pad to guide attention during struggle states.
+        /// </summary>
+        public void SetPulsingGlow(bool enablePulse)
+        {
+            isPulsingGlow = enablePulse;
+            if (!enablePulse)
+            {
                 UpdateVisualFeedback();
             }
         }
@@ -215,14 +314,14 @@ namespace AdaptiveVR.PlanetPuzzle
                     break;
             }
 
-            // Update socket indicator pad with faint, non-blinding emission
+            // Update socket indicator pad with vibrant, luminous emission
             if (indicatorRenderer != null)
             {
                 if (_indicatorMaterial == null) _indicatorMaterial = indicatorRenderer.material;
                 if (_indicatorMaterial != null)
                 {
-                    float emissionMult = (currentState == SlotState.Correct) ? 0.8f : (currentState == SlotState.Empty ? 0.2f : 0.6f);
-                    ApplyColorToMaterial(_indicatorMaterial, targetColor, emissionMult);
+                    float stateMult = (currentState == SlotState.Correct) ? 2.5f : (currentState == SlotState.Hovered ? 3.0f : (currentState == SlotState.Incorrect ? 2.0f : 1.6f));
+                    ApplyColorToMaterial(_indicatorMaterial, targetColor, stateMult * padEmissionMultiplier);
                 }
             }
 
@@ -233,7 +332,7 @@ namespace AdaptiveVR.PlanetPuzzle
                 if (_orbitLineMaterial != null)
                 {
                     Color lineCol = targetColor;
-                    float emissionMult = (currentState == SlotState.Correct) ? 0.7f : 0.2f;
+                    float emissionMult = (currentState == SlotState.Correct) ? 1.0f : 0.35f;
                     ApplyColorToMaterial(_orbitLineMaterial, lineCol, emissionMult);
                 }
             }
@@ -241,13 +340,16 @@ namespace AdaptiveVR.PlanetPuzzle
 
         private void ApplyColorToMaterial(Material mat, Color col, float emissionMult)
         {
+            Color baseCol = col;
+            baseCol.a = Mathf.Max(col.a, 0.75f); // Ensure pad is clearly visible
+
             if (mat.HasProperty(BaseColorId))
             {
-                mat.SetColor(BaseColorId, col);
+                mat.SetColor(BaseColorId, baseCol);
             }
             else if (mat.HasProperty(ColorId))
             {
-                mat.SetColor(ColorId, col);
+                mat.SetColor(ColorId, baseCol);
             }
 
             if (mat.HasProperty(EmissionColorId))

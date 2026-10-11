@@ -17,6 +17,8 @@ namespace AdaptiveVR.UI
     [RequireComponent(typeof(CanvasGroup))]
     public class OpeningScreenManager : MonoBehaviour
     {
+        public static OpeningScreenManager Instance { get; private set; }
+
         [Header("Sequence Timings (Seconds)")]
         [Tooltip("How long the logo remains prominently displayed before transitioning to the pairing code.")]
         public float logoDisplayDuration = 2.5f;
@@ -45,6 +47,12 @@ namespace AdaptiveVR.UI
 
         [Tooltip("Welcome banner text shown when a student is paired.")]
         public Text welcomeMessageText;
+
+        [Header("Pause UI Overlay")]
+        [Tooltip("Optional container holding the pause UI elements. Auto-generated if null.")]
+        public GameObject pauseContainer;
+        public Text pauseTitleText;
+        public Text pauseMessageText;
 
         [Header("VR Comfort & Positioning")]
         [Header("VR Comfort & Head Following")]
@@ -96,6 +104,8 @@ namespace AdaptiveVR.UI
 
         private void Awake()
         {
+            Instance = this;
+
             if (mainCanvasGroup == null)
             {
                 mainCanvasGroup = GetComponent<CanvasGroup>();
@@ -224,14 +234,15 @@ namespace AdaptiveVR.UI
             }
 
             // Smoothly interpolate position and rotation towards target
+            float dt = Time.unscaledDeltaTime;
             if ((transform.position - _targetFollowPosition).sqrMagnitude > 0.0001f)
             {
-                transform.position = Vector3.Lerp(transform.position, _targetFollowPosition, Time.deltaTime * followSpeed);
+                transform.position = Vector3.Lerp(transform.position, _targetFollowPosition, dt * followSpeed);
             }
 
             if (Quaternion.Angle(transform.rotation, _targetFollowRotation) > 0.1f)
             {
-                transform.rotation = Quaternion.Slerp(transform.rotation, _targetFollowRotation, Time.deltaTime * followSpeed);
+                transform.rotation = Quaternion.Slerp(transform.rotation, _targetFollowRotation, dt * followSpeed);
             }
         }
 
@@ -269,6 +280,9 @@ namespace AdaptiveVR.UI
             AdaptVRBackendClient.Instance.onDeviceRegistered.AddListener(HandleDeviceRegistered);
             AdaptVRBackendClient.Instance.onDeviceLinked.AddListener(HandleDeviceLinked);
             AdaptVRBackendClient.Instance.onSessionAssigned.AddListener(HandleSessionAssigned);
+            AdaptVRBackendClient.Instance.onSessionPaused.AddListener(HandleSessionPaused);
+            AdaptVRBackendClient.Instance.onSessionResumed.AddListener(HandleSessionResumed);
+            AdaptVRBackendClient.Instance.onSessionEnded.AddListener(HandleSessionEnded);
             AdaptVRBackendClient.Instance.onDisconnected.AddListener(HandleDisconnected);
         }
 
@@ -280,6 +294,9 @@ namespace AdaptiveVR.UI
             AdaptVRBackendClient.Instance.onDeviceRegistered.RemoveListener(HandleDeviceRegistered);
             AdaptVRBackendClient.Instance.onDeviceLinked.RemoveListener(HandleDeviceLinked);
             AdaptVRBackendClient.Instance.onSessionAssigned.RemoveListener(HandleSessionAssigned);
+            AdaptVRBackendClient.Instance.onSessionPaused.RemoveListener(HandleSessionPaused);
+            AdaptVRBackendClient.Instance.onSessionResumed.RemoveListener(HandleSessionResumed);
+            AdaptVRBackendClient.Instance.onSessionEnded.RemoveListener(HandleSessionEnded);
             AdaptVRBackendClient.Instance.onDisconnected.RemoveListener(HandleDisconnected);
         }
 
@@ -296,6 +313,21 @@ namespace AdaptiveVR.UI
         private void HandleDeviceLinked(string deviceLabel)
         {
             RefreshStatusUI();
+        }
+
+        private void HandleSessionPaused()
+        {
+            ShowPauseOverlay(true);
+        }
+
+        private void HandleSessionResumed()
+        {
+            ShowPauseOverlay(false);
+        }
+
+        private void HandleSessionEnded()
+        {
+            ReturnToPairingScreen("<color=#00FF88><b>Session Completed!</b></color>\nReady for the next student. Enter pairing code on dashboard.");
         }
 
         private void HandleDisconnected()
@@ -385,8 +417,10 @@ namespace AdaptiveVR.UI
             // Smoothly fade out the entire opening screen
             yield return StartCoroutine(FadeCanvasGroup(mainCanvasGroup, 1f, 0f, fadeDuration));
 
-            // Deactivate canvas GameObject so it doesn't block interaction
-            gameObject.SetActive(false);
+            // Hide canvas and disable interaction without destroying event listening
+            mainCanvasGroup.alpha = 0f;
+            mainCanvasGroup.blocksRaycasts = false;
+            mainCanvasGroup.interactable = false;
         }
 
         #endregion
@@ -418,12 +452,142 @@ namespace AdaptiveVR.UI
 
             while (elapsed < duration)
             {
-                elapsed += Time.deltaTime;
+                elapsed += Time.unscaledDeltaTime;
                 cg.alpha = Mathf.Lerp(from, to, elapsed / duration);
                 yield return null;
             }
 
             cg.alpha = to;
+        }
+
+        public void ShowPauseOverlay(bool show)
+        {
+            if (show)
+            {
+                EnsurePauseUIExists();
+                if (pairingContainer != null) pairingContainer.SetActive(false);
+                if (welcomeMessageText != null) welcomeMessageText.gameObject.SetActive(false);
+                if (pauseContainer != null) pauseContainer.SetActive(true);
+
+                PositionInFrontOfPlayer();
+                mainCanvasGroup.alpha = 1f;
+                mainCanvasGroup.blocksRaycasts = true;
+                mainCanvasGroup.interactable = true;
+            }
+            else
+            {
+                if (pauseContainer != null) pauseContainer.SetActive(false);
+
+                // If still in active session, hide canvas so student can interact
+                if (AdaptVRBackendClient.Instance != null && AdaptVRBackendClient.Instance.connectionState == ConnectionState.SessionActive)
+                {
+                    mainCanvasGroup.alpha = 0f;
+                    mainCanvasGroup.blocksRaycasts = false;
+                    mainCanvasGroup.interactable = false;
+                }
+            }
+        }
+
+        private void EnsurePauseUIExists()
+        {
+            if (pauseContainer != null) return;
+
+            if (pairingContainer != null)
+            {
+                pauseContainer = Instantiate(pairingContainer, transform);
+                pauseContainer.name = "PauseContainer";
+
+                Text[] texts = pauseContainer.GetComponentsInChildren<Text>(true);
+                if (texts.Length > 0)
+                {
+                    pauseTitleText = texts[0];
+                    pauseTitleText.text = "<color=#FFA500><b>⏸ SESSION PAUSED</b></color>";
+                    pauseTitleText.fontSize = Mathf.Max(pauseTitleText.fontSize, 28);
+                }
+                if (texts.Length > 1)
+                {
+                    pauseMessageText = texts[1];
+                    pauseMessageText.text = "The instructor has paused the VR session.\nPlease relax and wait for resumption.";
+                }
+                for (int i = 2; i < texts.Length; i++)
+                {
+                    texts[i].gameObject.SetActive(false);
+                }
+            }
+            else
+            {
+                GameObject container = new GameObject("PauseContainer", typeof(RectTransform));
+                container.transform.SetParent(transform, false);
+                var rt = container.GetComponent<RectTransform>();
+                rt.sizeDelta = new Vector2(500, 250);
+
+                GameObject titleObj = new GameObject("PauseTitle", typeof(RectTransform), typeof(Text));
+                titleObj.transform.SetParent(container.transform, false);
+                pauseTitleText = titleObj.GetComponent<Text>();
+                pauseTitleText.text = "<color=#FFA500><b>⏸ SESSION PAUSED</b></color>";
+                pauseTitleText.font = Resources.GetBuiltinResource<Font>("Arial.ttf");
+                pauseTitleText.fontSize = 28;
+                pauseTitleText.alignment = TextAnchor.MiddleCenter;
+
+                GameObject msgObj = new GameObject("PauseMsg", typeof(RectTransform), typeof(Text));
+                msgObj.transform.SetParent(container.transform, false);
+                pauseMessageText = msgObj.GetComponent<Text>();
+                pauseMessageText.text = "The instructor has paused the VR session.\nPlease relax and wait for resumption.";
+                pauseMessageText.font = Resources.GetBuiltinResource<Font>("Arial.ttf");
+                pauseMessageText.fontSize = 20;
+                pauseMessageText.alignment = TextAnchor.MiddleCenter;
+                var msgRt = msgObj.GetComponent<RectTransform>();
+                msgRt.anchoredPosition = new Vector2(0, -60);
+
+                pauseContainer = container;
+            }
+        }
+
+        public void ReturnToPairingScreen(string customStatus = null)
+        {
+            _isDismissed = false;
+
+            // 1. Hide environment & puzzle
+            if (_foundEnvironmentRoot != null) _foundEnvironmentRoot.SetActive(false);
+            if (_foundPuzzleRoot != null) _foundPuzzleRoot.SetActive(false);
+
+            // 2. Reset puzzle if present
+#if UNITY_2023_1_OR_NEWER
+            var puzzleMgr = FindFirstObjectByType<AdaptiveVR.PlanetPuzzle.SolarSystemPuzzleManager>();
+#else
+            var puzzleMgr = FindObjectOfType<AdaptiveVR.PlanetPuzzle.SolarSystemPuzzleManager>();
+#endif
+            if (puzzleMgr != null)
+            {
+                puzzleMgr.ScramblePlanets();
+            }
+
+            // 3. Reset background
+            if (useNeutralBackground && _mainCamera != null)
+            {
+                _mainCamera.clearFlags = CameraClearFlags.SolidColor;
+                _mainCamera.backgroundColor = neutralBackgroundColor;
+            }
+
+            // 4. Reset UI visibility
+            if (pauseContainer != null) pauseContainer.SetActive(false);
+            if (welcomeMessageText != null) welcomeMessageText.gameObject.SetActive(false);
+            if (pairingContainer != null) pairingContainer.SetActive(true);
+
+            // 5. Position in front of player & show canvas
+            PositionInFrontOfPlayer();
+            mainCanvasGroup.alpha = 1f;
+            mainCanvasGroup.blocksRaycasts = true;
+            mainCanvasGroup.interactable = true;
+
+            if (!string.IsNullOrEmpty(customStatus))
+            {
+                SetStatusMessage(customStatus);
+            }
+            else
+            {
+                RefreshStatusUI();
+            }
         }
 
         #endregion

@@ -105,6 +105,30 @@ namespace AdaptiveVR.DataCollection.Storage
     }
 
     /// <summary>
+    /// A single cognitive-load prediction result recorded during a task.
+    /// Written by SessionManager.RecordLearnerState() and read by retrain.py
+    /// for session-level analysis.
+    /// </summary>
+    [Serializable]
+    public class LearnerStateRecord
+    {
+        /// <summary>Seconds since task start when the inference fired.</summary>
+        public float  timestamp;
+
+        /// <summary>Predicted state: "Low" | "Medium" | "High".</summary>
+        public string predictedState;
+
+        /// <summary>Model confidence (0–1).</summary>
+        public float  confidence;
+
+        /// <summary>ONNX model version that produced this prediction (e.g. "v2").</summary>
+        public string modelVersion;
+
+        /// <summary>Prediction index within this task (1-based).</summary>
+        public int    predictionIndex;
+    }
+
+    /// <summary>
     /// Level 1 Telemetry: Discrete learning behavior event record.
     /// </summary>
     [Serializable]
@@ -244,13 +268,17 @@ namespace AdaptiveVR.DataCollection.Storage
         public bool completed;
 
         public TaskPerformance performance = new TaskPerformance();
-        public List<InteractionRecord> interactions = new List<InteractionRecord>();
+        public List<InteractionRecord>   interactions   = new List<InteractionRecord>();
         public List<LearningEventRecord> learningEvents = new List<LearningEventRecord>();
-        public List<HeadMovementSample> headMovement = new List<HeadMovementSample>();
-        public List<NavigationSample> navigation = new List<NavigationSample>();
-        public List<IdlePeriodRecord> idlePeriods = new List<IdlePeriodRecord>();
-        public List<FocusRecord> focusRecords = new List<FocusRecord>();
-        public AggregatedFeatures aggregatedFeatures = new AggregatedFeatures();
+        public List<HeadMovementSample>  headMovement   = new List<HeadMovementSample>();
+        public List<NavigationSample>    navigation     = new List<NavigationSample>();
+        public List<IdlePeriodRecord>    idlePeriods    = new List<IdlePeriodRecord>();
+        public List<FocusRecord>         focusRecords   = new List<FocusRecord>();
+        public AggregatedFeatures        aggregatedFeatures = new AggregatedFeatures();
+
+        /// <summary>Cognitive-load inference results recorded during this task.</summary>
+        public List<LearnerStateRecord>  stateHistory   = new List<LearnerStateRecord>();
+
 
         public TaskData() { }
 

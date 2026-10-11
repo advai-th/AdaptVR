@@ -1,5 +1,6 @@
 using System.Collections.Generic;
 using UnityEngine;
+using AdaptiveVR.DataCollection.Core;
 
 namespace AdaptiveVR.PlanetPuzzle
 {
@@ -59,6 +60,15 @@ namespace AdaptiveVR.PlanetPuzzle
 
         private void Update()
         {
+            if (SessionManager.HasInstance && SessionManager.Instance.isSessionPaused)
+            {
+                if (heldPlanet != null)
+                {
+                    ReleasePlanet();
+                }
+                return;
+            }
+
             if (autoPollInput)
             {
                 bool isInputPressed = false;

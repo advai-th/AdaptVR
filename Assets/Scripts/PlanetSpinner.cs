@@ -71,6 +71,15 @@ namespace AdaptiveVR.Environment
         [Tooltip("Allows previewing rotation inside the Unity Scene View without hitting Play.")]
         public bool previewInEditMode = true;
 
+        [Header("6. Operational State")]
+        [Tooltip("When paused (e.g., while held by the player in VR), rotation and orbiting are temporarily suspended to prevent tracking jitter.")]
+        public bool isPaused = false;
+
+        public void SetPaused(bool paused)
+        {
+            isPaused = paused;
+        }
+
         private PlanetPreset _lastPreset = PlanetPreset.Custom;
 
         private void Start()
@@ -215,6 +224,8 @@ namespace AdaptiveVR.Environment
 
         private void Update()
         {
+            if (isPaused) return;
+
             float deltaTime = 0f;
 
 #if UNITY_EDITOR
